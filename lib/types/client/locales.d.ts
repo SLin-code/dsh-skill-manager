@@ -1,0 +1,44 @@
+export declare const zh: {
+    tab: string;
+    noSession: string;
+    loading: string;
+    error: string;
+    retry: string;
+    search: string;
+    catalog: string;
+    empty: string;
+    emptySearch: string;
+    modelInvocation: string;
+    userInvocation: string;
+    readOnly: string;
+    saving: string;
+    saveError: string;
+    detailError: string;
+    instructions: string;
+    source: string;
+    provider: string;
+    path: string;
+};
+export type SkillManagerLocaleKey = keyof typeof zh;
+export declare const en: {
+    tab: string;
+    noSession: string;
+    loading: string;
+    error: string;
+    retry: string;
+    search: string;
+    catalog: string;
+    empty: string;
+    emptySearch: string;
+    modelInvocation: string;
+    userInvocation: string;
+    readOnly: string;
+    saving: string;
+    saveError: string;
+    detailError: string;
+    instructions: string;
+    source: string;
+    provider: string;
+    path: string;
+};
+//# sourceMappingURL=locales.d.ts.map

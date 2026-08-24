@@ -27,7 +27,7 @@ Install directly from GitHub:
 dsh plugin --profile web add github:SLin-code/dsh-skill-manager
 ```
 
-The Git dependency builds both plugin faces during installation; no checked-in build artifacts are required.
+The repository includes verified Host and browser bundles, so installation does not need to run dependency build scripts.
 
 Restart `dsh web`, open **Settings → Plugins → Skill Manager**, and select a session. To remove it:
 

@@ -47,6 +47,7 @@ function clientConfig(): UserConfig {
     platform: 'browser',
     dts: false,
     sourcemap: true,
+    minify: true,
     clean: false,
     external: [...CLIENT_EXTERNALS],
     noExternal: (id: string) => (CLIENT_EXTERNALS.includes(id as never) ? undefined : true),

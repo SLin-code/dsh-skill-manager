@@ -27,7 +27,7 @@
 dsh plugin --profile web add github:SLin-code/dsh-skill-manager
 ```
 
-Git 依赖会在安装阶段构建 Host 与浏览器两端，不依赖仓库中预提交的构建产物。
+仓库包含已验证的 Host 与浏览器 bundle，因此安装时不需要执行依赖构建脚本。
 
 重启 `dsh web`，打开**设置 → 插件 → Skill Manager**，并选中一个会话。卸载命令：
 
