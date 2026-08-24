@@ -1,0 +1,148 @@
+import { randomUUID } from 'node:crypto'
+import { lstat, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
+import type { SkillDefinition } from '@deepseek-ai/dsh-skill'
+import { isMap, parseDocument } from 'yaml'
+
+const WRITABLE_SOURCES = new Set([
+  'project-dsh',
+  'project-agents',
+  'user-dsh',
+  'user-agents',
+  'custom',
+])
+const LOCK_WAIT_MS = 25
+const LOCK_TIMEOUT_MS = 5_000
+const LOCK_STALE_MS = 30_000
+
+export interface InvocationPolicy {
+  readonly modelInvocable: boolean
+  readonly userInvocable: boolean
+}
+
+function findClosingFrontmatter(raw: string, start: number): { start: number } | undefined {
+  let lineStart = start
+  while (lineStart <= raw.length) {
+    const newline = raw.indexOf('\n', lineStart)
+    const lineEnd = newline < 0 ? raw.length : newline
+    if (raw.slice(lineStart, lineEnd).replace(/\r$/, '') === '---') return { start: lineStart }
+    if (newline < 0) return undefined
+    lineStart = newline + 1
+  }
+  return undefined
+}
+
+/** Update only the canonical invocation keys while preserving body text and YAML comments. */
+export function renderInvocationPolicy(raw: string, expectedName: string, invocation: InvocationPolicy): string {
+  const firstLineEnd = raw.indexOf('\n')
+  if (firstLineEnd < 0 || raw.slice(0, firstLineEnd).replace(/\r$/, '') !== '---') {
+    throw new Error(`skill "${expectedName}" has no YAML frontmatter`)
+  }
+  const start = firstLineEnd + 1
+  const closing = findClosingFrontmatter(raw, start)
+  if (closing === undefined) throw new Error(`skill "${expectedName}" has unclosed YAML frontmatter`)
+  const document = parseDocument(raw.slice(start, closing.start), { prettyErrors: true, uniqueKeys: true })
+  if (document.errors.length > 0 || !isMap(document.contents)) {
+    throw new Error(`skill "${expectedName}" has invalid YAML frontmatter`)
+  }
+  if (document.get('name') !== expectedName) {
+    throw new Error(`skill "${expectedName}" changed identity before update`)
+  }
+  document.set('disable-model-invocation', !invocation.modelInvocable)
+  document.set('user-invocable', invocation.userInvocable)
+  const newline = raw.slice(0, firstLineEnd).endsWith('\r') ? '\r\n' : '\n'
+  const frontmatter = document.toString().replaceAll('\n', newline)
+  return `${raw.slice(0, start)}${frontmatter}${raw.slice(closing.start)}`
+}
+
+async function directEntryIsWritable(skill: SkillDefinition): Promise<boolean> {
+  if (skill.path === undefined || !WRITABLE_SOURCES.has(skill.source)) return false
+  try {
+    const file = await lstat(skill.path)
+    if (!file.isFile() || file.isSymbolicLink()) return false
+    if (skill.resourceBase?.kind === 'directory') {
+      const directory = await lstat(skill.resourceBase.path)
+      if (directory.isSymbolicLink()) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function isWritableSkill(skill: SkillDefinition): Promise<boolean> {
+  return await directEntryIsWritable(skill)
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function acquireLock(path: string): Promise<() => Promise<void>> {
+  const lockPath = path + '.dsh-skill-manager.lock'
+  const deadline = Date.now() + LOCK_TIMEOUT_MS
+  while (true) {
+    try {
+      await mkdir(lockPath, { mode: 0o700 })
+      return async () => { await rm(lockPath, { recursive: true, force: true }) }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'EEXIST') throw error
+      try {
+        const lock = await stat(lockPath)
+        if (Date.now() - lock.mtimeMs > LOCK_STALE_MS) {
+          await rm(lockPath, { recursive: true, force: true })
+          continue
+        }
+      } catch (inspectError) {
+        if ((inspectError as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw inspectError
+      }
+      if (Date.now() >= deadline) throw new Error(`skill "${basename(path)}" is busy; try again`)
+      await sleep(LOCK_WAIT_MS)
+    }
+  }
+}
+
+async function atomicReplace(path: string, content: string, mode: number): Promise<void> {
+  const directory = dirname(path)
+  const temporary = join(directory, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`)
+  let handle: Awaited<ReturnType<typeof open>> | undefined
+  try {
+    handle = await open(temporary, 'wx', mode & 0o777)
+    await handle.writeFile(content, 'utf8')
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await rename(temporary, path)
+    try {
+      const directoryHandle = await open(directory, 'r')
+      try { await directoryHandle.sync() } finally { await directoryHandle.close() }
+    } catch {
+      // Directory fsync is not supported on every platform; the file rename is still atomic.
+    }
+  } finally {
+    if (handle !== undefined) await handle.close().catch(() => undefined)
+    await rm(temporary, { force: true }).catch(() => undefined)
+  }
+}
+
+/** Safely mutate one already-resolved, direct disk-backed Skill definition. */
+export async function updateSkillInvocation(
+  skill: SkillDefinition,
+  invocation: InvocationPolicy,
+): Promise<void> {
+  if (!await directEntryIsWritable(skill) || skill.path === undefined) {
+    throw new Error(`skill "${skill.name}" is read-only`)
+  }
+  const release = await acquireLock(skill.path)
+  try {
+    const info = await lstat(skill.path)
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error(`skill "${skill.name}" is read-only`)
+    const raw = await readFile(skill.path, 'utf8')
+    const next = renderInvocationPolicy(raw, skill.name, invocation)
+    await atomicReplace(skill.path, next, info.mode)
+  } finally {
+    await release()
+  }
+}

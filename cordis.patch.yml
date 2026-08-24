@@ -1,0 +1,4 @@
+# Mount both faces of dsh-skill-manager in the selected DSH Web profile.
+- insert:
+    - id: skill-manager
+      name: 'dsh-skill-manager'
