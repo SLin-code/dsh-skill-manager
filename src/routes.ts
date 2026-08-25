@@ -6,10 +6,16 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { isSkillName, type SkillDefinition, type SkillRegistry, type SkillViewOptions } from '@deepseek-ai/dsh-skill'
 import { API, type ErrorResponse, type InvocationUpdateRequest, type ManagedSkillEntry } from './protocol.ts'
-import { isWritableSkill, updateSkillInvocation } from './skill-file.ts'
+import { isWritableSkill, SkillUpdateConflict, updateSkillInvocation } from './skill-file.ts'
 
 const MAX_BODY_BYTES = 16 * 1024
 const MAX_SESSION_ID_LENGTH = 256
+
+class RouteError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message)
+  }
+}
 
 function isLoopbackRequest(request: IncomingMessage): boolean {
   const address = request.socket.remoteAddress
@@ -41,17 +47,21 @@ function fail(response: ServerResponse, status: number, message: string): void {
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
   if (!(request.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
-    throw new Error('content-type must be application/json')
+    throw new RouteError(415, 'content-type must be application/json')
   }
   let size = 0
   const chunks: Buffer[] = []
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     size += buffer.length
-    if (size > MAX_BODY_BYTES) throw new Error('request body is too large')
+    if (size > MAX_BODY_BYTES) throw new RouteError(413, 'request body is too large')
     chunks.push(buffer)
   }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+  } catch {
+    throw new RouteError(400, 'request body must be valid JSON')
+  }
 }
 
 function stringField(value: unknown, key: string): string | undefined {
@@ -83,8 +93,8 @@ interface SkillView {
 
 function viewFor(ctx: Context, sessionId: string): SkillView {
   const session = ctx.sessions.get(sessionId as SessionId)
-  if (session === undefined) throw new Error('session not found')
-  if (session.header.cwd === undefined) throw new Error('session has no project directory')
+  if (session === undefined) throw new RouteError(404, 'session not found')
+  if (session.header.cwd === undefined) throw new RouteError(404, 'session has no project directory')
   const live = ctx.agents.get(sessionId as SessionId)
   const scoped = live === undefined ? undefined : ctx.agentPresets.serviceFor(live, 'skills')
   return { cwd: session.header.cwd, registry: scoped ?? ctx.skills, scope: live }
@@ -108,8 +118,14 @@ async function entryOf(skill: SkillDefinition): Promise<ManagedSkillEntry | unde
 async function definitionFor(ctx: Context, sessionId: string, name: string): Promise<SkillDefinition> {
   const view = viewFor(ctx, sessionId)
   const skill = await view.registry.get(name, { cwd: view.cwd, scope: view.scope })
-  if (skill === undefined || skill.path === undefined) throw new Error('skill not found')
+  if (skill === undefined || skill.path === undefined) throw new RouteError(404, 'skill not found')
   return skill
+}
+
+function failFromError(response: ServerResponse, error: unknown, fallback: string): void {
+  if (error instanceof RouteError) return fail(response, error.status, error.message)
+  if (error instanceof SkillUpdateConflict) return fail(response, 409, error.message)
+  fail(response, 500, fallback)
 }
 
 function exact(path: string, handler: WebRoute['handler']): WebRoute {
@@ -131,7 +147,7 @@ export function makeRoutes(ctx: Context): WebRoute[] {
         const entries = await Promise.all(definitions.map(async skill => skill === undefined ? undefined : await entryOf(skill)))
         json(response, 200, { skills: entries.filter(entry => entry !== undefined), complete: snapshot.complete })
       } catch (error) {
-        fail(response, 404, error instanceof Error ? error.message : 'unable to list skills')
+        failFromError(response, error, 'unable to list skills')
       }
     }),
     exact(API.detail, async (request, response) => {
@@ -147,7 +163,7 @@ export function makeRoutes(ctx: Context): WebRoute[] {
         if (entry === undefined) return fail(response, 404, 'skill not found')
         json(response, 200, { skill: { ...entry, content: skill.content } })
       } catch (error) {
-        fail(response, 404, error instanceof Error ? error.message : 'unable to read skill')
+        failFromError(response, error, 'unable to read skill')
       }
     }),
     exact(API.invocation, async (request, response) => {
@@ -170,7 +186,7 @@ export function makeRoutes(ctx: Context): WebRoute[] {
         if (entry === undefined) return fail(response, 409, 'skill is not disk-backed')
         json(response, 200, { skill: entry })
       } catch (error) {
-        fail(response, 409, error instanceof Error ? error.message : 'unable to update skill')
+        failFromError(response, error, 'unable to update skill')
       }
     }),
   ]

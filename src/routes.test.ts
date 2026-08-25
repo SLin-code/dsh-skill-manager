@@ -14,6 +14,7 @@ describe('loopback routes', () => {
   let skillPath: string
   let server: Server
   let base: string
+  let snapshotError: Error | undefined
 
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-routes-'))
@@ -40,7 +41,10 @@ describe('loopback routes', () => {
       sessions: { get: (id: string) => id === 'session-1' ? { header: { cwd: directory } } : undefined },
       agents: { get: () => undefined },
       skills: {
-        snapshot: async () => ({ skills: [skill], complete: true }),
+        snapshot: async () => {
+          if (snapshotError !== undefined) throw snapshotError
+          return { skills: [skill], complete: true }
+        },
         get: async (name: string) => name === skill.name ? skill : undefined,
       },
     } as unknown as Context
@@ -99,5 +103,35 @@ describe('loopback routes', () => {
     expect(crossSite.status).toBe(403)
     const missing = await fetch(`${base}${API.list}?sessionId=missing`)
     expect(missing.status).toBe(404)
+  })
+
+  it('uses precise statuses for malformed request bodies', async () => {
+    const wrongType = await fetch(`${base}${API.invocation}`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: '{}',
+    })
+    expect(wrongType.status).toBe(415)
+
+    const invalidJson = await fetch(`${base}${API.invocation}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{',
+    })
+    expect(invalidJson.status).toBe(400)
+
+    const tooLarge = await fetch(`${base}${API.invocation}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ padding: 'x'.repeat(20 * 1024) }),
+    })
+    expect(tooLarge.status).toBe(413)
+  })
+
+  it('does not disguise unexpected provider failures as missing resources', async () => {
+    snapshotError = new Error('provider credentials leaked here')
+    const response = await fetch(`${base}${API.list}?sessionId=session-1`)
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({ error: 'unable to list skills' })
   })
 })

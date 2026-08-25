@@ -20,6 +20,10 @@ export interface InvocationPolicy {
   readonly userInvocable: boolean
 }
 
+export class SkillUpdateConflict extends Error {
+  override readonly name = 'SkillUpdateConflict'
+}
+
 function findClosingFrontmatter(raw: string, start: number): { start: number } | undefined {
   let lineStart = start
   while (lineStart <= raw.length) {
@@ -98,7 +102,7 @@ async function acquireLock(path: string): Promise<() => Promise<void>> {
         if ((inspectError as NodeJS.ErrnoException).code === 'ENOENT') continue
         throw inspectError
       }
-      if (Date.now() >= deadline) throw new Error(`skill "${basename(path)}" is busy; try again`)
+      if (Date.now() >= deadline) throw new SkillUpdateConflict(`skill "${basename(path)}" is busy; try again`)
       await sleep(LOCK_WAIT_MS)
     }
   }
@@ -133,14 +137,19 @@ export async function updateSkillInvocation(
   invocation: InvocationPolicy,
 ): Promise<void> {
   if (!await directEntryIsWritable(skill) || skill.path === undefined) {
-    throw new Error(`skill "${skill.name}" is read-only`)
+    throw new SkillUpdateConflict(`skill "${skill.name}" is read-only`)
   }
   const release = await acquireLock(skill.path)
   try {
     const info = await lstat(skill.path)
-    if (!info.isFile() || info.isSymbolicLink()) throw new Error(`skill "${skill.name}" is read-only`)
+    if (!info.isFile() || info.isSymbolicLink()) throw new SkillUpdateConflict(`skill "${skill.name}" is read-only`)
     const raw = await readFile(skill.path, 'utf8')
-    const next = renderInvocationPolicy(raw, skill.name, invocation)
+    let next: string
+    try {
+      next = renderInvocationPolicy(raw, skill.name, invocation)
+    } catch (error) {
+      throw new SkillUpdateConflict(error instanceof Error ? error.message : `skill "${skill.name}" cannot be updated`)
+    }
     await atomicReplace(skill.path, next, info.mode)
   } finally {
     await release()

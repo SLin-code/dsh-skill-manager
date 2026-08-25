@@ -3,6 +3,9 @@ export interface InvocationPolicy {
     readonly modelInvocable: boolean;
     readonly userInvocable: boolean;
 }
+export declare class SkillUpdateConflict extends Error {
+    readonly name = "SkillUpdateConflict";
+}
 /** Update only the canonical invocation keys while preserving body text and YAML comments. */
 export declare function renderInvocationPolicy(raw: string, expectedName: string, invocation: InvocationPolicy): string;
 export declare function isWritableSkill(skill: SkillDefinition): Promise<boolean>;
