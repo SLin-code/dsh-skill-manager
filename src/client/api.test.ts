@@ -24,4 +24,20 @@ describe('SkillManagerApi', () => {
     })
     expect(body).not.toHaveProperty('path')
   })
+
+  it('preserves the HTTP status when an error response is not JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<h1>Bad gateway</h1>', {
+      status: 502,
+      headers: { 'content-type': 'text/html' },
+    })))
+    await expect(new SkillManagerApi().list('session-1')).rejects.toThrow('request failed (502)')
+  })
+
+  it('reports malformed successful responses without leaking a JSON parser error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })))
+    await expect(new SkillManagerApi().list('session-1')).rejects.toThrow('invalid JSON response (200)')
+  })
 })

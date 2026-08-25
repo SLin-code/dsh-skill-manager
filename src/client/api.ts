@@ -7,7 +7,14 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
   const timer = setTimeout(() => { controller.abort() }, TIMEOUT_MS)
   try {
     const response = await fetch(input, { ...init, signal: controller.signal, credentials: 'same-origin' })
-    const body = await response.json() as { error?: unknown } & T
+    const raw = await response.text()
+    let body: ({ error?: unknown } & T) | undefined
+    try {
+      body = JSON.parse(raw) as { error?: unknown } & T
+    } catch {
+      if (!response.ok) throw new Error(`request failed (${response.status})`)
+      throw new Error(`invalid JSON response (${response.status})`)
+    }
     if (!response.ok) throw new Error(typeof body.error === 'string' ? body.error : `request failed (${response.status})`)
     return body
   } finally {
