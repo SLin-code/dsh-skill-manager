@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { lstat, mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
+import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { SkillDefinition } from '@deepseek-ai/dsh-skill'
 import { isMap, parseDocument } from 'yaml'
@@ -91,13 +91,28 @@ async function sleep(ms: number): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, ms))
 }
 
-async function acquireLock(path: string): Promise<() => Promise<void>> {
+export async function acquireLock(path: string): Promise<() => Promise<void>> {
   const lockPath = path + '.dsh-skill-manager.lock'
   const deadline = Date.now() + LOCK_TIMEOUT_MS
   while (true) {
     try {
       await mkdir(lockPath, { mode: 0o700 })
-      return async () => { await rm(lockPath, { recursive: true, force: true }) }
+      const token = randomUUID()
+      const ownerPath = join(lockPath, 'owner')
+      try {
+        await writeFile(ownerPath, token, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+      } catch (error) {
+        await rm(lockPath, { recursive: true, force: true }).catch(() => undefined)
+        throw error
+      }
+      return async () => {
+        try {
+          if (await readFile(ownerPath, 'utf8') !== token) return
+          await rm(lockPath, { recursive: true, force: true })
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        }
+      }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       if (code !== 'EEXIST') throw error

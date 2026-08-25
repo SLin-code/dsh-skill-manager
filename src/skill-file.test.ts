@@ -1,9 +1,9 @@
-import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { SkillDefinition } from '@deepseek-ai/dsh-skill'
-import { isWritableSkill, renderInvocationPolicy, updateSkillInvocation } from './skill-file.ts'
+import { acquireLock, isWritableSkill, renderInvocationPolicy, updateSkillInvocation } from './skill-file.ts'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { await Promise.all(cleanups.splice(0).map(cleanup => cleanup())) })
@@ -103,5 +103,18 @@ describe('Skill invocation frontmatter', () => {
       userInvocable: false,
     })).rejects.toThrow('read-only')
     expect(await readFile(outsideSkill, 'utf8')).not.toContain('disable-model-invocation')
+  })
+
+  it('does not let an old owner remove a replacement lock', async () => {
+    const item = await fixture()
+    const lockPath = item.path + '.dsh-skill-manager.lock'
+    const releaseOld = await acquireLock(item.path)
+    await rm(lockPath, { recursive: true })
+    const releaseCurrent = await acquireLock(item.path)
+
+    await releaseOld()
+    await expect(stat(lockPath)).resolves.toBeDefined()
+    await releaseCurrent()
+    await expect(stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
