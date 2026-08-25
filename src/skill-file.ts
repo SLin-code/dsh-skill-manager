@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { lstat, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { lstat, mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { SkillDefinition } from '@deepseek-ai/dsh-skill'
 import { isMap, parseDocument } from 'yaml'
 
@@ -67,6 +67,15 @@ async function directEntryIsWritable(skill: SkillDefinition): Promise<boolean> {
     if (skill.resourceBase?.kind === 'directory') {
       const directory = await lstat(skill.resourceBase.path)
       if (directory.isSymbolicLink()) return false
+      const lexicalBase = resolve(skill.resourceBase.path)
+      const lexicalPath = resolve(skill.path)
+      const childPath = relative(lexicalBase, lexicalPath)
+      if (childPath === '..' || childPath.startsWith(`..${sep}`) || isAbsolute(childPath)) return false
+      const [resolvedBase, resolvedPath] = await Promise.all([
+        realpath(skill.resourceBase.path),
+        realpath(skill.path),
+      ])
+      if (resolvedPath !== resolve(resolvedBase, childPath)) return false
     }
     return true
   } catch {

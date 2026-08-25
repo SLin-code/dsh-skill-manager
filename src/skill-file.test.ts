@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -85,5 +85,23 @@ describe('Skill invocation frontmatter', () => {
       modelInvocable: false,
       userInvocable: false,
     })).rejects.toThrow('read-only')
+  })
+
+  it('keeps entries below a symbolic-link directory read-only', async () => {
+    const item = await fixture()
+    const base = join(item.directory, 'base')
+    const outside = join(item.directory, 'outside')
+    await Promise.all([mkdir(base), mkdir(outside)])
+    const outsideSkill = join(outside, 'SKILL.md')
+    await writeFile(outsideSkill, '---\nname: example-skill\n---\nbody\n')
+    await symlink(outside, join(base, 'linked'), 'dir')
+    const skill = definition(join(base, 'linked', 'SKILL.md'), base)
+
+    await expect(isWritableSkill(skill)).resolves.toBe(false)
+    await expect(updateSkillInvocation(skill, {
+      modelInvocable: false,
+      userInvocable: false,
+    })).rejects.toThrow('read-only')
+    expect(await readFile(outsideSkill, 'utf8')).not.toContain('disable-model-invocation')
   })
 })
