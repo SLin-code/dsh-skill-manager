@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -55,6 +55,13 @@ describe('Skill invocation frontmatter', () => {
     expect(next).toContain('user-invocable: true')
     expect(next.endsWith('# Instructions\n\nDo the thing.\n')).toBe(true)
     await expect(readFile(item.path + '.dsh-skill-manager.lock')).rejects.toThrow()
+  })
+
+  it('preserves the exact file mode across the atomic replacement', async () => {
+    const item = await fixture()
+    await chmod(item.path, 0o764)
+    await updateSkillInvocation(item.skill, { modelInvocable: false, userInvocable: true })
+    expect((await stat(item.path)).mode & 0o777).toBe(0o764)
   })
 
   it('rejects invalid frontmatter and an identity change', () => {

@@ -114,6 +114,8 @@ async function atomicReplace(path: string, content: string, mode: number): Promi
   let handle: Awaited<ReturnType<typeof open>> | undefined
   try {
     handle = await open(temporary, 'wx', mode & 0o777)
+    // open(2) applies the process umask; restore the source file's exact mode.
+    await handle.chmod(mode & 0o777)
     await handle.writeFile(content, 'utf8')
     await handle.sync()
     await handle.close()
