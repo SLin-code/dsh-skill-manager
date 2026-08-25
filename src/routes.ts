@@ -10,6 +10,7 @@ import { isWritableSkill, SkillUpdateConflict, updateSkillInvocation } from './s
 
 const MAX_BODY_BYTES = 16 * 1024
 const MAX_SESSION_ID_LENGTH = 256
+const LIST_CONCURRENCY = 8
 
 class RouteError extends Error {
   constructor(readonly status: number, message: string) {
@@ -115,6 +116,24 @@ async function entryOf(skill: SkillDefinition): Promise<ManagedSkillEntry | unde
   }
 }
 
+async function mapConcurrent<T, R>(
+  items: readonly T[],
+  limit: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = next++
+      if (index >= items.length) return
+      results[index] = await mapper(items[index] as T)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
+}
+
 async function definitionFor(ctx: Context, sessionId: string, name: string): Promise<SkillDefinition> {
   const view = viewFor(ctx, sessionId)
   const skill = await view.registry.get(name, { cwd: view.cwd, scope: view.scope })
@@ -142,9 +161,10 @@ export function makeRoutes(ctx: Context): WebRoute[] {
       try {
         const view = viewFor(ctx, sessionId)
         const snapshot = await view.registry.snapshot({ cwd: view.cwd, scope: view.scope })
-        const definitions = await Promise.all(snapshot.skills.map(skill =>
-          view.registry.get(skill.name, { cwd: view.cwd, scope: view.scope })))
-        const entries = await Promise.all(definitions.map(async skill => skill === undefined ? undefined : await entryOf(skill)))
+        const entries = await mapConcurrent(snapshot.skills, LIST_CONCURRENCY, async snapshotSkill => {
+          const skill = await view.registry.get(snapshotSkill.name, { cwd: view.cwd, scope: view.scope })
+          return skill === undefined ? undefined : await entryOf(skill)
+        })
         json(response, 200, { skills: entries.filter(entry => entry !== undefined), complete: snapshot.complete })
       } catch (error) {
         failFromError(response, error, 'unable to list skills')
